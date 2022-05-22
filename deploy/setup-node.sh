@@ -6,11 +6,13 @@ NGINX_PROJECT_DIR="/etc/nginx/sites-enabled"
 CURRENT_DIR=$(pwd)
 DOMAIN="example.com"
 EMAIL="foo@bar.com"
+TOR_HIDDEN_SERVICE_NAME="your-hidden-service-name-here"
 
 echo ""
 echo "###### UPDATING HEADERS ######"
 echo ""
-sudo apt-get update
+sudo apt update
+sudo apt upgrade
 
 echo ""
 echo "###### INSTALLING DEPENDENCIES ######"
@@ -22,8 +24,6 @@ sudo apt-get -y install \
     lsb-release \
     git \
     curl \
-    nginx \
-    certbot \
     python3-certbot-nginx \
     p7zip-full
 
@@ -91,44 +91,215 @@ echo ""
 echo "###### SETTING UP NGINX AND LET'S ENCRYPT ######"
 echo ""
 
-# setup configuration file
-sudo tee -a $DOMAIN > /dev/null <<EOT
-server {
-    server_name         $DOMAIN;
+while true; do
+    read -p "Do you wish to install your node with Tor? " yn
+    case $yn in
+        [Yy]* ) install_nginx_tor; break;;
+        [Nn]* ) install_nginx;;
+        * ) echo "Please answer yes or no.";;
+    esac
+done
 
-    location / {
-        proxy_pass http://127.0.0.1:11898;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
+function install_nginx_tor
+{
+	SOFTWARE="tor"
+	QUERY="$(sudo dpkg-query -l | grep ${SOFTWARE} | wc -l)"
+
+	if [ "$QUERY" -eq 0 ]; then
+		echo ""
+		echo "INSTALLING NGINX WITH TOR..."
+		echo ""
+        sudo apt install -y nftables apt-transport-https
+
+        echo ""
+        echo "###### SETUP NFTABLES RULES ######"
+        echo ""
+        sudo nft add rule inet filter input ct state related,established counter accept
+        sudo nft add rule inet filter input iif lo counter accept
+        sudo nft add rule inet filter input tcp dport 22 counter accept
+        sudo nft add rule inet filter input counter drop
+        sudo nft list ruleset > /etc/nftables.conf
+
+        # add tor repositories to sources.list
+        sudo sed '$a\\n\ndeb https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
+        sudo sed '$a\\n\ndeb-src https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
+
+        # add the GNU privacy guard (gpg) key used to sign the tor packages
+        sudo apt install -y gpg curl
+        curl https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc | gpg --import
+        gpg --export A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89 | apt-key add -
+        
+        # update and install tor, deb.torproject.org-keyring and nginx
+        sudo apt update
+        sudo apt install -y tor deb.torproject.org-keyring nginx
+
+        # replace tor configuration file
+        sudo tee -a torrc > /dev/null <<EOT
+        Log notice file /var/log/tor/log
+        RunAsDaemon 1
+        DataDirectory /var/lib/tor
+        HiddenServiceDir /var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/
+        HiddenServicePort 80 unix:/var/run/nginx.sock
+        EOT
+        sudo cp $CURRENT_DIR/torrc /etc/tor/torrc
+
+        # restart tor
+        sudo systemctl restart tor
+
+        # get onion address
+        ONION_ADDRESS=$(cat /var/lib/tor/hiddenservicename/hostname)
+
+        # setup nginx.conf
+        sudo tee -a nginx.conf > /dev/null <<EOT
+        user www-data;
+        worker_processes auto;
+        pid /run/nginx.pid;
+        include /etc/nginx/modules-enabled/*.conf;
+
+        events {
+            worker_connections 768;
+            # multi_accept on;
+        }
+
+        http {
+            sendfile on;
+            tcp_nopush on;
+            tcp_nodelay on;
+            keepalive_timeout 65;
+            types_hash_max_size 2048;
+            
+            # Tor settings
+            server_tokens off;
+            add_header X-Frame-Options "SAMEORIGIN";
+            add_header X-XSS-Protection "1; mode=block";
+            client_body_buffer_size 1k;
+            client_header_buffer_size 1k;
+            client_max_body_size 1k;
+            large_client_header_buffers 2 1k;
+
+            include /etc/nginx/mime.types;
+            default_type application/octet-stream;
+
+            ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3; # Dropping SSLv3, ref: POODLE
+            ssl_prefer_server_ciphers on;
+
+            access_log /var/log/nginx/access.log;
+            error_log /var/log/nginx/error.log;
+
+            gzip on;
+
+            include /etc/nginx/conf.d/*.conf;
+            include /etc/nginx/sites-enabled/*;
+        }
+        EOT
+        sudo cp $CURRENT_DIR/nginx.conf /etc/nginx/nginx.conf
+        
+        # setup default configuration file
+        sudo tee -a default > /dev/null <<EOT
+        server {
+            server_name         $ONION_ADDRESS;
+            listen unix:/var/run/nginx.sock;
+
+            location / {
+                proxy_pass http://127.0.0.1:11898;
+                proxy_set_header Host \$host;
+                proxy_set_header X-Real-IP \$remote_addr;
+                proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto \$scheme;
+            }
+        }
+        EOT
+        sudo cp $CURRENT_DIR/default /etc/nginx/sites-available/default
+
+        # updating nginx.service daemon
+        sudo tee -a nging.service > /dev/null <<EOT
+        [Unit]
+        Description=A high performance web server and a reverse proxy server
+        Documentation=man:nginx(8)
+        After=network.target
+
+        [Service]
+        Type=forking
+        PIDFile=/run/nginx.pid
+        ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
+        ExecStart=/usr/sbin/nginx -g 'daemon on; master_process on;'
+        ExecReload=/usr/sbin/nginx -g 'daemon on; master_process on;' -s reload
+        ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile /run/nginx.pid
+        TimeoutStopSec=5
+        KillMode=mixed
+        PrivateNetwork=yes
+
+        [Install]
+        WantedBy=multi-user.target
+        EOT
+        sudo cp $CURRENT_DIR/default /etc/nginx/sites-available/default
+
+        # restart nginx
+        sudo systemctl stop nginx
+        sudo rm /var/run/nginx.sock
+        sudo systemctl start nginx
+
+        # set permissions and restart tor
+        sudo chown -R root /var/lib/tor
+        sudo service tor restart
+        sudo tor
+		
+	else
+		echo "${SOFTWARE} is already installed. skipping..."
+	fi
 }
 
-server {
-    if (\$host = $DOMAIN) {
-        return 301 https://\$host\$request_uri;
-    }
+function install_nginx 
+{
+    SOFTWARE="nginx"
+	QUERY="$(sudo dpkg-query -l | grep ${SOFTWARE} | wc -l)"
 
-    listen              80;
-    listen              [::]:80;
-    server_name         $DOMAIN;
-    return              404;
+	if [ "$QUERY" -eq 0 ]; then
+        echo ""
+		echo "INSTALLING NGINX WITH LET'S ENCRYPT..."
+		echo ""
+        sudo apt install -y nginx certbot
+
+        # setup configuration file
+        sudo tee -a $DOMAIN > /dev/null <<EOT
+        server {
+            server_name         $DOMAIN;
+            location / {
+                proxy_pass http://127.0.0.1:11898;
+                proxy_set_header Host \$host;
+                proxy_set_header X-Real-IP \$remote_addr;
+                proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto \$scheme;
+            }
+        }
+        server {
+            if (\$host = $DOMAIN) {
+                return 301 https://\$host\$request_uri;
+            }
+            listen              80;
+            listen              [::]:80;
+            server_name         $DOMAIN;
+            return              404;
+        }
+        EOT
+
+        echo ""
+        echo "###### COPY NGINX CONFIG TO NGINX ######"
+        echo ""
+        sudo cp $CURRENT_DIR/$DOMAIN $NGINX_PROJECT_DIR/$DOMAIN
+
+        echo ""
+        echo "###### CONFIGURE CERTBOT ######"
+        echo ""
+        sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
+
+        echo ""
+        echo "###### RELOAD AND RESTART NGINX ######"
+        echo ""
+        sudo systemctl reload nginx
+        sudo systemctl restart nginx
+    else
+        echo "${SOFTWARE} is already installed. skipping..."
+    fi
 }
-EOT
 
-echo ""
-echo "###### COPY NGINX CONFIG TO NGINX ######"
-echo ""
-sudo cp $CURRENT_DIR/$DOMAIN $NGINX_PROJECT_DIR/$DOMAIN
-
-echo ""
-echo "###### CONFIGURE CERTBOT ######"
-echo ""
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
-
-echo ""
-echo "###### RELOAD AND RESTART NGINX ######"
-echo ""
-sudo systemctl reload nginx
-sudo systemctl restart nginx
