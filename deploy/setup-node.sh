@@ -131,26 +131,27 @@ function install_nginx_tor
         
         # update and install tor, deb.torproject.org-keyring and nginx
         sudo apt update
-        sudo apt install -y tor deb.torproject.org-keyring nginx
+        sudo apt install -y $SOFTWARE deb.torproject.org-keyring nginx
 
         # replace tor configuration file
-        sudo tee -a torrc > /dev/null <<EOT
+        TORCC_FILE="
         Log notice file /var/log/tor/log
         RunAsDaemon 1
         DataDirectory /var/lib/tor
         HiddenServiceDir /var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/
         HiddenServicePort 80 unix:/var/run/nginx.sock
-        EOT
+        "
+        echo "$TORCC_FILE" >> torrc
         sudo cp $CURRENT_DIR/torrc /etc/tor/torrc
 
         # restart tor
-        sudo systemctl restart tor
+        sudo systemctl restart $SOFTWARE
 
         # get onion address
         ONION_ADDRESS=$(cat /var/lib/tor/hiddenservicename/hostname)
 
         # setup nginx.conf
-        sudo tee -a nginx.conf > /dev/null <<EOT
+        NGINX_CONF_FILE="
         user www-data;
         worker_processes auto;
         pid /run/nginx.pid;
@@ -170,8 +171,8 @@ function install_nginx_tor
             
             # Tor settings
             server_tokens off;
-            add_header X-Frame-Options "SAMEORIGIN";
-            add_header X-XSS-Protection "1; mode=block";
+            add_header X-Frame-Options 'SAMEORIGIN';
+            add_header X-XSS-Protection '1; mode=block';
             client_body_buffer_size 1k;
             client_header_buffer_size 1k;
             client_max_body_size 1k;
@@ -191,11 +192,12 @@ function install_nginx_tor
             include /etc/nginx/conf.d/*.conf;
             include /etc/nginx/sites-enabled/*;
         }
-        EOT
+        "
+        echo "$NGINX_CONF_FILE" >> nginx.conf
         sudo cp $CURRENT_DIR/nginx.conf /etc/nginx/nginx.conf
         
         # setup default configuration file
-        sudo tee -a default > /dev/null <<EOT
+        NGINX_DEFAULT_CONF="
         server {
             server_name         $ONION_ADDRESS;
             listen unix:/var/run/nginx.sock;
@@ -208,31 +210,12 @@ function install_nginx_tor
                 proxy_set_header X-Forwarded-Proto \$scheme;
             }
         }
-        EOT
+        "
+        echo "$NGINX_DEFAULT_CONF" >> default
         sudo cp $CURRENT_DIR/default /etc/nginx/sites-available/default
 
         # updating nginx.service daemon
-        sudo tee -a nging.service > /dev/null <<EOT
-        [Unit]
-        Description=A high performance web server and a reverse proxy server
-        Documentation=man:nginx(8)
-        After=network.target
-
-        [Service]
-        Type=forking
-        PIDFile=/run/nginx.pid
-        ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
-        ExecStart=/usr/sbin/nginx -g 'daemon on; master_process on;'
-        ExecReload=/usr/sbin/nginx -g 'daemon on; master_process on;' -s reload
-        ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile /run/nginx.pid
-        TimeoutStopSec=5
-        KillMode=mixed
-        PrivateNetwork=yes
-
-        [Install]
-        WantedBy=multi-user.target
-        EOT
-        sudo cp $CURRENT_DIR/default /etc/nginx/sites-available/default
+        sudo cp $CURRENT_DIR/kryptokrona/deploy/nginx.service /lib/systemd/system/nginx.service
 
         # restart nginx
         sudo systemctl stop nginx
@@ -258,10 +241,10 @@ function install_nginx
         echo ""
 		echo "INSTALLING NGINX WITH LET'S ENCRYPT..."
 		echo ""
-        sudo apt install -y nginx certbot
+        sudo apt install -y $SOFTWARE certbot
 
         # setup configuration file
-        sudo tee -a $DOMAIN > /dev/null <<EOT
+        NGINX_CONF_FILE="
         server {
             server_name         $DOMAIN;
             location / {
@@ -281,7 +264,8 @@ function install_nginx
             server_name         $DOMAIN;
             return              404;
         }
-        EOT
+        "
+        echo "$NGINX_CONF_FILE" >> $DOMAIN
 
         echo ""
         echo "###### COPY NGINX CONFIG TO NGINX ######"
