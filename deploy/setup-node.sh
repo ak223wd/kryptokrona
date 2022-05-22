@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # this file is intended of setting up a kryptokrona node on a vps
 # copy this file to your vps and make it executable
 
@@ -12,7 +12,7 @@ echo ""
 echo "###### UPDATING HEADERS ######"
 echo ""
 sudo apt update
-sudo apt upgrade
+sudo apt -y upgrade
 
 echo ""
 echo "###### INSTALLING DEPENDENCIES ######"
@@ -72,12 +72,6 @@ else
 fi
 
 echo ""
-echo "###### BULDING DOCKER IMAGE ######"
-echo ""
-(cd ./kryptokrona && git checkout docker-prod) # remove this line after when finished
-(cd ./kryptokrona && docker build -f ./deploy/Dockerfile -t kryptokrona/kryptokrona-node .)
-
-echo ""
 echo "###### CREATING DOCKER NETWORK ######"
 echo ""
 docker network create kryptokrona
@@ -85,18 +79,9 @@ docker network create kryptokrona
 echo ""
 echo "###### RUNNING DOCKER CONTAINER ######"
 echo ""
-docker run -d -p 11898:11898 --volume=$CURRENT_DIR/boostrap/.kryptokrona:/usr/src/kryptokrona/build/src/blockloc --network=kryptokrona kryptokrona/kryptokrona-node 
+docker run -d -p 11898:11898 --volume=$CURRENT_DIR/boostrap/.kryptokrona:/usr/src/kryptokrona/build/src/blockloc --network=kryptokrona mjovanc/kryptokrona 
 
-while true; do
-    read -p "Do you wish to install your node with Tor? " yn
-    case $yn in
-        [Yy]* ) install_nginx_tor; break;;
-        [Nn]* ) install_nginx;;
-        * ) echo "Please answer yes or no.";;
-    esac
-done
-
-function install_nginx_tor
+function install_nginx_tor()
 {
 	SOFTWARE="tor"
 	QUERY="$(sudo dpkg-query -l | grep ${SOFTWARE} | wc -l)"
@@ -228,7 +213,7 @@ function install_nginx_tor
 	fi
 }
 
-function install_nginx 
+function install_nginx()
 {
     SOFTWARE="nginx"
 	QUERY="$(sudo dpkg-query -l | grep ${SOFTWARE} | wc -l)"
@@ -283,3 +268,11 @@ function install_nginx
     fi
 }
 
+while true; do
+    read -p "Do you wish to install your node with Tor? " yn
+    case $yn in
+        [Yy]* ) install_nginx_tor; break;;
+        [Nn]* ) install_nginx;;
+        * ) echo "Please answer yes or no.";;
+    esac
+done
