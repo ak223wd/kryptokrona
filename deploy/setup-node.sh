@@ -53,6 +53,7 @@ if [ -f "kryptokrona" ]; then
     (cd kryptokrona && git pull)
 else
     git clone https://github.com/kryptokrona/kryptokrona.git
+    (cd kryptokrona && git checkout tor-node) #TODO: remove this later
 fi
 
 echo ""
@@ -79,31 +80,38 @@ docker network create kryptokrona
 echo ""
 echo "###### RUNNING DOCKER CONTAINER ######"
 echo ""
+docker kill $(docker ps -q)
 docker run -d -p 11898:11898 --volume=$CURRENT_DIR/boostrap/.kryptokrona:/usr/src/kryptokrona/build/src/blockloc --network=kryptokrona mjovanc/kryptokrona 
 
 function install_nginx_tor()
 {
 	SOFTWARE="tor"
-	QUERY="$(sudo dpkg-query -l | grep ${SOFTWARE} | wc -l)"
+	QUERY="$(which $SOFTWARE | grep -o $SOFTWARE > /dev/null &&  echo 0 || echo 1)"
 
-	if [ "$QUERY" -eq 0 ]; then
+	if [ "$QUERY" -eq 1 ]; then
 		echo ""
 		echo "INSTALLING NGINX WITH TOR..."
 		echo ""
         sudo apt install -y nftables apt-transport-https
 
+        # enable and start nftables
+        sudo systemctl enable nftables
+        sudo systemctl start nftables
+
         echo ""
         echo "###### SETUP NFTABLES RULES ######"
         echo ""
-        sudo nft add rule inet filter input ct state related,established counter accept
-        sudo nft add rule inet filter input iif lo counter accept
-        sudo nft add rule inet filter input tcp dport 22 counter accept
-        sudo nft add rule inet filter input counter drop
+        sudo nft add table inet filter
+        sudo nft add chain inet filter kryptokrona_chain
+        sudo nft add rule inet filter kryptokrona_chain ct state related,established counter accept
+        sudo nft add rule inet filter kryptokrona_chain iif lo counter accept
+        sudo nft add rule inet filter kryptokrona_chain tcp dport 22 counter accept
+        sudo nft add rule inet filter kryptokrona_chain counter drop
         sudo nft list ruleset > /etc/nftables.conf
 
         # add tor repositories to sources.list
-        sudo sed '$a\\n\ndeb https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
-        sudo sed '$a\\n\ndeb-src https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
+        sudo sed -i -e '$a\\n\ndeb https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
+        sudo sed -i -e '$a\\n\ndeb-src https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
 
         # add the GNU privacy guard (gpg) key used to sign the tor packages
         sudo apt install -y gpg curl
@@ -123,7 +131,7 @@ function install_nginx_tor()
         HiddenServicePort 80 unix:/var/run/nginx.sock
         "
         echo "$TORCC_FILE" >> torrc
-        sudo cp $CURRENT_DIR/torrc /etc/tor/torrc
+        sudo cp torrc /etc/tor/torrc
 
         # restart tor
         sudo systemctl restart $SOFTWARE
@@ -175,12 +183,12 @@ function install_nginx_tor()
         }
         "
         echo "$NGINX_CONF_FILE" >> nginx.conf
-        sudo cp $CURRENT_DIR/nginx.conf /etc/nginx/nginx.conf
+        sudo cp nginx.conf /etc/nginx/nginx.conf
         
         # replace default configuration file
         NGINX_DEFAULT_CONF="
         server {
-            server_name         $ONION_ADDRESS;
+            server_name $ONION_ADDRESS;
             listen unix:/var/run/nginx.sock;
 
             location / {
@@ -199,6 +207,7 @@ function install_nginx_tor()
         sudo cp $CURRENT_DIR/kryptokrona/deploy/nginx.service /lib/systemd/system/nginx.service
 
         # restart nginx
+        sudo systemctl daemon-reload
         sudo systemctl stop nginx
         sudo rm /var/run/nginx.sock
         sudo systemctl start nginx
@@ -216,9 +225,9 @@ function install_nginx_tor()
 function install_nginx()
 {
     SOFTWARE="nginx"
-	QUERY="$(sudo dpkg-query -l | grep ${SOFTWARE} | wc -l)"
+	QUERY="$(which $SOFTWARE | grep -o $SOFTWARE > /dev/null &&  echo 0 || echo 1)"
 
-	if [ "$QUERY" -eq 0 ]; then
+	if [ "$QUERY" -eq 1 ]; then
         echo ""
 		echo "INSTALLING NGINX WITH LET'S ENCRYPT..."
 		echo ""
@@ -269,7 +278,7 @@ function install_nginx()
 }
 
 while true; do
-    read -p "Do you wish to install your node with Tor? " yn
+    read -p "Do you wish to install your node with Tor (y/n)? " yn
     case $yn in
         [Yy]* ) install_nginx_tor; break;;
         [Nn]* ) install_nginx;;
