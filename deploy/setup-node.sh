@@ -87,10 +87,6 @@ echo "###### RUNNING DOCKER CONTAINER ######"
 echo ""
 docker run -d -p 11898:11898 --volume=$CURRENT_DIR/boostrap/.kryptokrona:/usr/src/kryptokrona/build/src/blockloc --network=kryptokrona kryptokrona/kryptokrona-node 
 
-echo ""
-echo "###### SETTING UP NGINX AND LET'S ENCRYPT ######"
-echo ""
-
 while true; do
     read -p "Do you wish to install your node with Tor? " yn
     case $yn in
@@ -148,7 +144,7 @@ function install_nginx_tor
         sudo systemctl restart $SOFTWARE
 
         # get onion address
-        ONION_ADDRESS=$(cat /var/lib/tor/hiddenservicename/hostname)
+        ONION_ADDRESS=$(cat /var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/hostname)
 
         # setup nginx.conf
         NGINX_CONF_FILE="
@@ -196,7 +192,7 @@ function install_nginx_tor
         echo "$NGINX_CONF_FILE" >> nginx.conf
         sudo cp $CURRENT_DIR/nginx.conf /etc/nginx/nginx.conf
         
-        # setup default configuration file
+        # replace default configuration file
         NGINX_DEFAULT_CONF="
         server {
             server_name         $ONION_ADDRESS;
