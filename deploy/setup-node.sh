@@ -6,7 +6,7 @@ NGINX_PROJECT_DIR="/etc/nginx/sites-enabled"
 CURRENT_DIR=$(pwd)
 DOMAIN="example.com"
 EMAIL="foo@bar.com"
-TOR_HIDDEN_SERVICE_NAME="your-hidden-service-name-here"
+TOR_HIDDEN_SERVICE_NAME="xkrs"
 
 echo ""
 echo "###### UPDATING HEADERS ######"
@@ -57,7 +57,7 @@ else
 fi
 
 echo ""
-echo "###### DOWNLOADING EXISTING BLOCKS FROM BOOTSTRAP ######"
+echo "###### DOWNLOADING EXISTING BLOCKS FROM KRYPTOKRONA ######"
 echo ""
 if [ -f "bootstrap.7z" ]; then
     echo "bootstrap.7z exists. No need to download. Skipping..."
@@ -80,7 +80,7 @@ docker network create kryptokrona
 echo ""
 echo "###### RUNNING DOCKER CONTAINER ######"
 echo ""
-docker kill $(docker ps -q)
+docker stop $(docker ps -q)
 docker run -d -p 11898:11898 --volume=$CURRENT_DIR/boostrap/.kryptokrona:/usr/src/kryptokrona/build/src/blockloc --network=kryptokrona mjovanc/kryptokrona 
 
 function install_nginx_tor()
@@ -92,7 +92,7 @@ function install_nginx_tor()
 		echo ""
 		echo "INSTALLING NGINX WITH TOR..."
 		echo ""
-        sudo apt install -y nftables apt-transport-https
+        sudo apt install -y nftables apt-transport-https gpg curl
 
         # enable and start nftables
         sudo systemctl enable nftables
@@ -114,13 +114,15 @@ function install_nginx_tor()
         sudo sed -i -e '$a\\n\ndeb-src https://deb.torproject.org/torproject.org focal main' /etc/apt/sources.list
 
         # add the GNU privacy guard (gpg) key used to sign the tor packages
-        sudo apt install -y gpg curl
         curl https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc | gpg --import
         gpg --export A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89 | apt-key add -
         
         # update and install tor, deb.torproject.org-keyring and nginx
         sudo apt update
         sudo apt install -y $SOFTWARE deb.torproject.org-keyring nginx
+
+        # stopping nginx 
+        sudo systemctl stop nginx
 
         # replace tor configuration file
         TORCC_FILE="
@@ -130,14 +132,21 @@ function install_nginx_tor()
         HiddenServiceDir /var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/
         HiddenServicePort 80 unix:/var/run/nginx.sock
         "
-        echo "$TORCC_FILE" >> torrc
-        sudo cp torrc /etc/tor/torrc
+        echo "$TORCC_FILE" > "/etc/tor/torrc"
 
         # restart tor
         sudo systemctl restart $SOFTWARE
 
+        # sleeping so tor can establish connection and get the hostname first
+        sleep 30
+
+        # getting tor logs
+        tail /var/log/tor/log
+
         # get onion address
-        ONION_ADDRESS=$(cat /var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/hostname)
+        ONION_ADDRESS=$(cat "/var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/hostname")
+
+        #sudo rm /var/run/nginx.sock
 
         # setup nginx.conf
         NGINX_CONF_FILE="
@@ -182,8 +191,7 @@ function install_nginx_tor()
             include /etc/nginx/sites-enabled/*;
         }
         "
-        echo "$NGINX_CONF_FILE" >> nginx.conf
-        sudo cp nginx.conf /etc/nginx/nginx.conf
+        echo "$NGINX_CONF_FILE" > "/etc/nginx/nginx.conf"
         
         # replace default configuration file
         NGINX_DEFAULT_CONF="
@@ -200,23 +208,33 @@ function install_nginx_tor()
             }
         }
         "
-        echo "$NGINX_DEFAULT_CONF" >> default
-        sudo cp $CURRENT_DIR/default /etc/nginx/sites-available/default
+        echo "$NGINX_DEFAULT_CONF" > "/etc/nginx/sites-available/default"
 
         # updating nginx.service daemon
-        sudo cp $CURRENT_DIR/kryptokrona/deploy/nginx.service /lib/systemd/system/nginx.service
+        sudo cp -f $CURRENT_DIR/kryptokrona/deploy/nginx.service /lib/systemd/system/nginx.service
 
         # restart nginx
         sudo systemctl daemon-reload
-        sudo systemctl stop nginx
-        sudo rm /var/run/nginx.sock
+        sudo service tor restart
         sudo systemctl start nginx
 
-        # set permissions and restart tor
-        sudo chown -R root /var/lib/tor
-        sudo service tor restart
-        sudo tor
-		
+        # set permissions
+        # sudo chown -R root /var/lib/tor
+
+        # check status of services
+        systemctl status nginx
+        systemctl status tor
+
+        # check logs
+        tail /var/log/tor/log
+        tail /var/log/nginx/error.log
+
+        # get onion address
+        echo " "
+        cat "/var/lib/tor/$TOR_HIDDEN_SERVICE_NAME/hostname"
+        echo " "
+        echo "^^^^ YOUR ONION ADDRESS ^^^^"
+        echo " "
 	else
 		echo "${SOFTWARE} is already installed. skipping..."
 	fi
@@ -285,3 +303,5 @@ while true; do
         * ) echo "Please answer yes or no.";;
     esac
 done
+
+echo "THANKS FOR SETTING UP A KRYPTOKRONA NODE 😎"
